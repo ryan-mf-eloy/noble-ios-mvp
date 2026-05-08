@@ -1,0 +1,13 @@
+--swiftversion 5.9
+--indent 4
+--maxwidth 120
+--header strip
+--commas inline
+--trailingclosures
+--self insert
+--patternlet inline
+--stripunusedargs closure-only
+--wraparguments before-first
+--wrapparameters before-first
+--wrapcollections before-first
+--exclude DerivedData,build,.build,Pods

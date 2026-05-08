@@ -1,0 +1,65 @@
+name: Noble
+
+options:
+  bundleIdPrefix: com.nobleinnovations
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+targets:
+  Noble:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: NobleApp
+        excludes:
+          - "**/*.md"
+          - "**/.gitkeep"
+    info:
+      path: NobleApp/Info.plist
+      properties:
+        CFBundleDisplayName: Noble
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIRequiresFullScreen: true
+        UIStatusBarStyle: UIStatusBarStyleLightContent
+        UIViewControllerBasedStatusBarAppearance: false
+        NSCameraUsageDescription: "Noble uses your camera to capture cards for 3D rendering."
+        NSPhotoLibraryAddUsageDescription: "Noble saves your captured card 3D scans to your photo library."
+        UIAppFonts:
+          - Anton-Regular.ttf
+          - Inter-Variable.ttf
+          - Caveat-Variable.ttf
+          - JetBrainsMono-Bold.ttf
+        UILaunchScreen:
+          UIColorName: nobleOrange
+    entitlements:
+      path: NobleApp/Noble.entitlements
+      properties:
+        com.apple.developer.applesignin:
+          - Default
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nobleinnovations.noble
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        SUPPORTS_MACCATALYST: NO

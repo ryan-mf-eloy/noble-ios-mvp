@@ -1,0 +1,58 @@
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+build/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xcuserstate
+project.xcworkspace
+.swiftpm/
+
+# macOS
+.DS_Store
+._*
+
+# Swift Package Manager
+.build/
+Packages/
+Package.pins
+Package.resolved
+*.xcodeproj
+.netrc
+
+# CocoaPods (not used, but just in case)
+Pods/
+Podfile.lock
+
+# fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/
+fastlane/test_output
+
+# Misc
+*.log
+.env
+.env.local
+
+# Old screenshot artifacts at repo root (not docs/ — those are tracked)
+/screen-*.png
+/welcome-screen*.png
+/rot_*.png
+/SHIP-*.png
+/02-*.png
+
+# Generated build folder from local xcodebuild runs
+/build/
+
+# Plan/Memory scratch files (these are personal local notes)
+/.claude/
+
+# Fonts (Anton, Inter, Caveat, JetBrains Mono — all OFL-licensed, safe to commit)
+# Re-enable below to exclude if you want to fetch via Resources/Fonts/README.md
+# NobleApp/Resources/Fonts/*.ttf
+# NobleApp/Resources/Fonts/*.otf

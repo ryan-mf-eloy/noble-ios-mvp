@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<style>
+  html, body { margin: 0; padding: 0; background: #0A0A0A; height: 100%; overflow: hidden; }
+  canvas { display: block; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script type="importmap">
+  { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+// === Card data injected from Swift ===
+const cardColor = parseInt('{{COLOR}}', 16);
+const playerName = '{{PLAYER}}';
+const cardNumber = '{{NUMBER}}';
+const cardImageURL = '{{IMAGE_URL}}';        // base64 data URL of the real PSA-slabbed FRONT photo
+const cardBackImageURL = '{{BACK_IMAGE_URL}}'; // base64 data URL of the real PSA-slabbed BACK photo
+
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+// MeshPhysicalMaterial transmission needs sRGB output + tone mapping to look
+// like real acrylic. Without these, the clear-plastic case reads as washed-out
+// alpha rather than refractive glass.
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(0, 0, 6.4);  // slightly closer — card fills viewport better
+
+// === Lighting ===
+// Studio softbox simulation: an environment map provides the bulk of the
+// "natural" reflections (the soft band of light you see sweeping across
+// real acrylic), and a couple of weak directional lights add directionality
+// so the slab's chamfered edges still catch a defined highlight when
+// rotating. Heavy directional lights without an env map create hard,
+// computery specular spots — the env map is what makes it read organic.
+function makeProceduralEnvMap() {
+  // Equirectangular 2:1 canvas representing the dark studio environment a
+  // PSA slab is typically photographed in: nearly-black room with two small
+  // softbox reflections to give the acrylic something to catch as it
+  // rotates. Bright env bands wash the case out — keep contrast modest.
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 256;
+  const ctx = c.getContext('2d');
+
+  // Gradient stays dark — the slab itself isn't reflecting a bright sky,
+  // it's reflecting a black-velvet studio backdrop with subtle warm rim.
+  const sky = ctx.createLinearGradient(0, 0, 0, c.height);
+  sky.addColorStop(0.00, '#070707');   // black zenith
+  sky.addColorStop(0.40, '#202024');   // faint blue-gray horizon hint
+  sky.addColorStop(0.55, '#262626');
+  sky.addColorStop(1.00, '#040404');   // black floor
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, c.width, c.height);
+
+  // Two soft spots — top-left warm (key softbox) and top-right cool (fill).
+  // Kept dim so the acrylic catches a defined highlight without the case
+  // washing out to white. These are the moving "natural" highlights you see
+  // sweeping across the slab as the user rotates it.
+  function spot(x, y, r, color) {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, color);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, c.width, c.height);
+  }
+  spot(c.width * 0.28, c.height * 0.32, 70, 'rgba(255, 230, 200, 0.32)');
+  spot(c.width * 0.74, c.height * 0.38, 55, 'rgba(200, 220, 255, 0.22)');
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const envEquirect = makeProceduralEnvMap();
+const pmrem = new THREE.PMREMGenerator(renderer);
+pmrem.compileEquirectangularShader();
+const envMap = pmrem.fromEquirectangular(envEquirect).texture;
+scene.environment = envMap;     // drives reflections + IBL on PBR materials
+envEquirect.dispose();
+pmrem.dispose();
+
+// Lights now do most of the diffuse illumination on the card art, since the
+// dark env map deliberately doesn't bring much brightness on its own. Env
+// map drives the glossy reflections + IBL on the acrylic; lights drive the
+// matte card legibility.
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+
+const key = new THREE.DirectionalLight(0xffffff, 1.4);
+key.position.set(3, 5, 6);
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xeef2ff, 0.6);
+fill.position.set(-4, 1, 4);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffffff, 0.5);
+rim.position.set(0, 3, -5);
+scene.add(rim);
+
+const sheen = new THREE.PointLight(0xffffff, 0.5, 12);
+sheen.position.set(0, 2, 4);
+scene.add(sheen);
+
+// === Slab geometry ===
+// Real PSA/BGS slabs measure ~73×102×6mm — at our 2.5-unit width that's
+// depth ~0.20. Match real proportions; previous 0.07 was too paper-thin.
+// Build the slab as a rounded-rectangle ExtrudeGeometry so corners read
+// curved (real plastic case) and bevels chamfer where front meets sides
+// (real plastic injection-mold edge profile).
+const slabW = 2.5, slabH = 4.25, slabD = 0.20;
+const slabCornerR = 0.06;     // outer corner radius (~5% of width)
+const slabBevel = 0.018;      // chamfer depth+inset at front/back edges
+
+function buildRoundedRectShape(w, h, r) {
+  const s = new THREE.Shape();
+  const w2 = w / 2, h2 = h / 2;
+  s.moveTo(-w2 + r, -h2);
+  s.lineTo(w2 - r, -h2);
+  s.quadraticCurveTo(w2, -h2, w2, -h2 + r);
+  s.lineTo(w2, h2 - r);
+  s.quadraticCurveTo(w2, h2, w2 - r, h2);
+  s.lineTo(-w2 + r, h2);
+  s.quadraticCurveTo(-w2, h2, -w2, h2 - r);
+  s.lineTo(-w2, -h2 + r);
+  s.quadraticCurveTo(-w2, -h2, -w2 + r, -h2);
+  return s;
+}
+
+const slabShape = buildRoundedRectShape(slabW, slabH, slabCornerR);
+const slabGeometry = new THREE.ExtrudeGeometry(slabShape, {
+  depth: slabD,
+  bevelEnabled: true,
+  bevelThickness: slabBevel,
+  bevelSize: slabBevel,
+  bevelSegments: 4,
+  curveSegments: 16,
+});
+// Center on Z so slabGroup rotation pivots through the slab middle, not the back face.
+slabGeometry.translate(0, 0, -slabD / 2);
+
+// Front face — load REAL PSA-slabbed photo as texture, with procedural fallback
+function makeProceduralCardTexture(bgHex, name, number) {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 870;  // slab proportions
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#' + bgHex.toString(16).padStart(6, '0');
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = '#FFFFFF';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '900 72px Helvetica, Arial Black';
+  const words = name.split(' ');
+  const baseY = c.height / 2;
+  words.forEach((word, i) => {
+    ctx.fillText(word.toUpperCase(), c.width / 2, baseY + (i - (words.length - 1) / 2) * 80);
+  });
+  return new THREE.CanvasTexture(c);
+}
+
+function loadRealCardTexture(url) {
+  return new Promise((resolve, reject) => {
+    const loader = new THREE.TextureLoader();
+    loader.load(
+      url,
+      (texture) => {
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.anisotropy = 16;
+        resolve(texture);
+      },
+      undefined,
+      reject
+    );
+  });
+}
+
+let frontTexture;
+try {
+  if (cardImageURL && cardImageURL.length > 0) {
+    frontTexture = await loadRealCardTexture(cardImageURL);
+  } else {
+    frontTexture = makeProceduralCardTexture(cardColor, playerName, cardNumber);
+    frontTexture.colorSpace = THREE.SRGBColorSpace;
+  }
+} catch (e) {
+  console.warn('Real card image failed to load, using procedural:', e);
+  frontTexture = makeProceduralCardTexture(cardColor, playerName, cardNumber);
+  frontTexture.colorSpace = THREE.SRGBColorSpace;
+}
+
+// Card photo materials — the card itself is matte cardstock. The clear
+// plastic case (separate mesh, MeshPhysicalMaterial with transmission)
+// provides the gloss layer in front of the card. The card material stays
+// matte so it doesn't double up the glossy reflection.
+//
+// `FrontSide` on a BoxGeometry face is correct: each face renders from its
+// outward-facing side, and BoxGeometry's -Z face naturally mirrors UVs —
+// which pairs with the pre-flipped back texture from the asset scraper to
+// display the back unmirrored.
+const frontMaterial = new THREE.MeshStandardMaterial({
+  map: frontTexture,
+  metalness: 0.0,
+  roughness: 0.6,
+  envMapIntensity: 0.35,
+});
+
+// Procedural back fallback — used if no real back photo is bundled
+function makeProceduralBackTexture() {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 870;
+  const ctx = c.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, c.height);
+  grad.addColorStop(0, '#3a3a3a'); grad.addColorStop(0.5, '#2a2a2a'); grad.addColorStop(1, '#3a3a3a');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = 'rgba(255, 79, 31, 0.22)';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = '900 96px Helvetica, Arial Black';
+  ctx.fillText('NOBLE', c.width / 2, c.height / 2);
+  return new THREE.CanvasTexture(c);
+}
+
+// Back face — load REAL PSA-slabbed BACK photo, fall back to procedural if absent
+let backTexture;
+try {
+  if (cardBackImageURL && cardBackImageURL.length > 0) {
+    backTexture = await loadRealCardTexture(cardBackImageURL);
+  } else {
+    backTexture = makeProceduralBackTexture();
+    backTexture.colorSpace = THREE.SRGBColorSpace;
+  }
+} catch (e) {
+  console.warn('Real back image failed to load, using procedural:', e);
+  backTexture = makeProceduralBackTexture();
+  backTexture.colorSpace = THREE.SRGBColorSpace;
+}
+
+// The bundled back texture was pre-flipped horizontally for an earlier
+// rendering approach. With the current BoxGeometry setup (where the -Z face
+// UVs no longer self-mirror at this rotation), the pre-flip would leave the
+// back text reading right-to-left. Cancel it by mirroring the texture's
+// horizontal sampling so the displayed image reads correctly.
+backTexture.wrapS = THREE.RepeatWrapping;
+backTexture.repeat.x = -1;
+backTexture.offset.x = 1;
+
+const backMaterial = new THREE.MeshPhysicalMaterial({
+  map: backTexture,
+  metalness: 0.0,
+  roughness: 0.55,
+  clearcoat: 0.9,
+  clearcoatRoughness: 0.16,
+  reflectivity: 0.35,
+  envMapIntensity: 0.7,
+  side: THREE.DoubleSide,
+});
+
+// === Side texture — procedural normal map for matte plastic + mold seam ===
+// Real PSA/BGS slabs are injection-molded as two halves that snap together,
+// leaving a faint horizontal seam at mid-depth and a fine textured matte
+// finish. We bake both into a normal map applied to the frame body so the
+// sides read as real polycarbonate, not a featureless block.
+function makeSlabSideNormalMap() {
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 256;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(c.width, c.height);
+  const data = img.data;
+
+  const seamY = c.height / 2;
+  for (let y = 0; y < c.height; y++) {
+    for (let x = 0; x < c.width; x++) {
+      const idx = (y * c.width + x) * 4;
+
+      // Base normal: pointing straight out of surface = (0.5, 0.5, 1.0) → RGB(128,128,255)
+      let nr = 128;
+      let ng = 128;
+      let nb = 255;
+
+      // Matte plastic micro-texture: tiny isotropic noise so the surface
+      // catches light unevenly the way real polycarbonate does.
+      const noise = (Math.random() - 0.5) * 14;
+      nr += noise;
+      ng += noise * 0.7;
+
+      // Horizontal mold seam at v=0.5 (mid-depth where the two case halves
+      // meet). Sharp ridge pointing slightly outward — readable from the side
+      // even at low light.
+      const seamDist = Math.abs(y - seamY);
+      if (seamDist < 1.2) {
+        ng = y < seamY ? 92 : 164;  // bevel up above, bevel down below
+        nb = 235;
+      } else if (seamDist < 5) {
+        const falloff = (5 - seamDist) / 5;
+        ng += (y < seamY ? -22 : 22) * falloff;
+      }
+
+      data[idx]     = Math.max(0, Math.min(255, nr));
+      data[idx + 1] = Math.max(0, Math.min(255, ng));
+      data[idx + 2] = Math.max(0, Math.min(255, nb));
+      data[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping;   // tile around the perimeter (u)
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.repeat.set(6, 1);                // 6 tiles around perimeter for fine detail
+  tex.anisotropy = 8;
+  return tex;
+}
+
+const sideNormalMap = makeSlabSideNormalMap();
+
+// Slab body — CLEAR ACRYLIC. Real PSA/BGS cases aren't matte black blocks;
+// they're transparent injection-molded acrylic, so the card and label are
+// visible through the case from any angle. We use MeshPhysicalMaterial with
+// `transmission` (true refractive transparency, not just alpha blending) +
+// IOR 1.49 (acrylic) and a faint tint so the body reads as plastic rather
+// than empty air. The seam normal map stays — even clear plastic has a faint
+// mold line where the two halves snap together, and it gives light something
+// to catch as the slab rotates.
+const frameMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,                  // pure clear, no body tint
+  metalness: 0.0,
+  roughness: 0.05,                  // smoother — closer to polished acrylic
+  transmission: 0.95,
+  thickness: 0.18,                  // thinner light path → card brightness preserved
+  ior: 1.49,
+  attenuationColor: 0xffffff,       // no color shift through the plastic
+  attenuationDistance: 8.0,         // effectively no attenuation over slab depth
+  clearcoat: 0.6,
+  clearcoatRoughness: 0.22,        // softer specular — diffuse organic highlight
+  envMapIntensity: 0.55,
+  normalMap: sideNormalMap,
+  normalScale: new THREE.Vector2(0.25, 0.25),
+  side: THREE.DoubleSide,
+});
+
+const slabFrame = new THREE.Mesh(slabGeometry, frameMaterial);
+// Render the transparent case AFTER the opaque card planes so it composites
+// correctly over them.
+slabFrame.renderOrder = 1;
+
+// === Card mesh — a real 3D card with thickness, encapsulated in the case ===
+// Two flat planes look like stickers on the case — empty in between. A real
+// slabbed card has card stock with measurable thickness; from the side you
+// see a thin paper-coloured stripe between the front and back acrylic walls.
+// This BoxGeometry recreates that: front+back faces show the photos, the
+// four edge faces show a cream cardstock colour so the card reads as a
+// genuine 3D object inside the case, not two decals.
+const cardW = slabW - slabBevel * 2;
+const cardH = slabH - slabBevel * 2;
+const cardD = 0.045;   // ~1.4mm in slab-scale — real PSA holder w/ card sleeve
+
+const cardGeom = new THREE.BoxGeometry(cardW, cardH, cardD);
+
+// Cream-paper edge material for the four side faces of the card stock.
+const cardEdgeMaterial = new THREE.MeshStandardMaterial({
+  color: 0xe6dccc,
+  metalness: 0.0,
+  roughness: 0.95,
+  envMapIntensity: 0.25,
+});
+
+// Material slot order on BoxGeometry: [+X, -X, +Y, -Y, +Z (front), -Z (back)]
+const cardMesh = new THREE.Mesh(cardGeom, [
+  cardEdgeMaterial,
+  cardEdgeMaterial,
+  cardEdgeMaterial,
+  cardEdgeMaterial,
+  frontMaterial,
+  backMaterial,
+]);
+cardMesh.renderOrder = 0;
+
+// All meshes rotated as one — animate loop already targets `card`.
+const card = new THREE.Group();
+card.add(slabFrame);
+card.add(cardMesh);
+scene.add(card);
+
+// === Interaction ===
+let isDragging = false;
+let lastX = 0, lastY = 0;
+let pointerDownX = 0, pointerDownY = 0;
+let targetRotY = 0, targetRotX = 0;
+let autoRotate = true;        // initial slow rotation; cleared on first user touch and never re-enabled
+let lastTapTime = 0;
+const TAP_MOVE_THRESHOLD = 8; // pixels — beyond this, the gesture is a drag, not a tap
+
+function pointerDown(e) {
+  isDragging = true;
+  autoRotate = false;
+  const x = e.clientX || (e.touches && e.touches[0].clientX) || 0;
+  const y = e.clientY || (e.touches && e.touches[0].clientY) || 0;
+  lastX = x; lastY = y;
+  pointerDownX = x; pointerDownY = y;
+  e.preventDefault();
+}
+function pointerMove(e) {
+  if (!isDragging) return;
+  const x = e.clientX || (e.touches && e.touches[0].clientX) || 0;
+  const y = e.clientY || (e.touches && e.touches[0].clientY) || 0;
+  targetRotY += (x - lastX) * 0.01;
+  targetRotX += (y - lastY) * 0.01;
+  targetRotX = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, targetRotX));
+  lastX = x; lastY = y;
+  e.preventDefault();
+}
+function pointerUp(e) {
+  if (!isDragging) return;
+  isDragging = false;
+  const x = e.clientX || (e.changedTouches && e.changedTouches[0].clientX) || lastX;
+  const y = e.clientY || (e.changedTouches && e.changedTouches[0].clientY) || lastY;
+  const moved = Math.hypot(x - pointerDownX, y - pointerDownY);
+
+  // Only honor tap-based interactions if the finger barely moved.
+  // A drag-and-release is NOT a tap — never let it trigger the double-tap flip.
+  if (moved < TAP_MOVE_THRESHOLD) {
+    const now = Date.now();
+    if (now - lastTapTime < 280) {
+      targetRotY += Math.PI;  // double-tap: flip 180°
+      lastTapTime = 0;
+    } else {
+      lastTapTime = now;
+    }
+  } else {
+    // Was a drag — reset tap chain so subsequent quick drags can't combine
+    // into an accidental "double-tap" flip.
+    lastTapTime = 0;
+  }
+}
+
+canvas.addEventListener('pointerdown', pointerDown);
+canvas.addEventListener('pointermove', pointerMove);
+canvas.addEventListener('pointerup', pointerUp);
+canvas.addEventListener('pointercancel', pointerUp);
+canvas.addEventListener('pointerleave', pointerUp);
+
+// Pinch zoom
+let initialPinchDist = 0;
+let initialZ = camera.position.z;
+canvas.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 2) {
+    initialPinchDist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+    initialZ = camera.position.z;
+  }
+}, { passive: false });
+canvas.addEventListener('touchmove', (e) => {
+  if (e.touches.length === 2 && initialPinchDist > 0) {
+    e.preventDefault();
+    const d = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+    camera.position.z = Math.max(3, Math.min(10, initialZ * (initialPinchDist / d)));
+  }
+}, { passive: false });
+
+// Resize
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// Animate — initial showcase rotation cycles through front/back slowly,
+// stops on first user interaction and never auto-resumes
+function animate() {
+  requestAnimationFrame(animate);
+  if (autoRotate) {
+    // ~9 second full rotation — comfortable showcase pace that
+    // visibly cycles front → side → back → side → front
+    targetRotY += 0.012;
+  }
+  card.rotation.y += (targetRotY - card.rotation.y) * 0.12;
+  card.rotation.x += (targetRotX - card.rotation.x) * 0.12;
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
