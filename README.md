@@ -2,6 +2,8 @@
 
 # **Noble Innovations**
 
+<img src="preview.png" alt="Noble Innovations portfolio preview" width="720" />
+
 ### The collector experience sports cards deserve.
 
 A high-fidelity iOS prototype reimagining how collectors discover, auction, trade, and showcase their cards — built end-to-end as a single, sellable product vision.
